@@ -26,6 +26,7 @@ defmodule ExIrc.Client do
               logged_on?:       false,
               autoping:         true,
               channel_prefixes: "",
+              channel_modes:    [],
               network:          "",
               user_prefixes:    "",
               login_time:       "",
@@ -203,6 +204,13 @@ defmodule ExIrc.Client do
     GenServer.call(client, {:channel_users, channel})
   end
   @doc """
+  Get a list of users in the provided channel including modes
+  """
+  @spec channel_user_modes(client :: pid, channel :: binary) :: list(binary) | [] | {:error, atom}
+  def channel_user_modes(client, channel) do
+    GenServer.call(client, {:channel_user_modes, channel})
+  end
+  @doc """
   Get the topic of the provided channel
   """
   @spec channel_topic(client :: pid, channel :: binary) :: binary | {:error, atom}
@@ -268,6 +276,7 @@ defmodule ExIrc.Client do
      connected?:        state.connected?,
      logged_on?:        state.logged_on?,
      channel_prefixes:  state.channel_prefixes,
+     channel_modes:     state.channel_modes,
      user_prefixes:     state.user_prefixes,
      channels:          Channels.to_proplist(state.channels),
      network:           state.network,
@@ -424,6 +433,8 @@ defmodule ExIrc.Client do
   def handle_call(:channels, _from, state), do: {:reply, Channels.channels(state.channels), state}
   # Handles call to return a list of users for a given channel
   def handle_call({:channel_users, channel}, _from, state), do: {:reply, Channels.channel_users(state.channels, channel), state}
+  # Handles call to return a list of users for a given channel including modes
+  def handle_call({:channel_user_modes, channel}, _from, state), do: {:reply, Channels.channel_user_modes(state.channels, channel), state}
   # Handles call to return the given channel's topic
   def handle_call({:channel_topic, channel}, _from, state), do: {:reply, Channels.channel_topic(state.channels, channel), state}
   # Handles call to return the type of the given channel
@@ -547,7 +558,8 @@ defmodule ExIrc.Client do
   # Called when the server sends it's current capabilities
   def handle_data(%IrcMessage{cmd: @rpl_isupport} = msg, state) do
     if state.debug?, do: debug "RECEIVING SERVER CAPABILITIES"
-    {:noreply, Utils.isup(msg.args, state)}
+    new_state = Utils.isup(msg.args, state)
+    {:noreply, new_state}
   end
   # Called when the client enters a channel
   def handle_data(%IrcMessage{nick: nick, cmd: "JOIN"} = msg, %ClientState{nick: nick} = state) do
@@ -613,11 +625,8 @@ defmodule ExIrc.Client do
       [nick, channel_type, channel, names]  -> {nick, channel_type, channel, names}
       [channel_type, channel, names]        -> {nil, channel_type, channel, names}
     end
-    channels = Channels.set_type(
-      Channels.users_join(state.channels, channel, String.split(names, " ", trim: true)),
-      channel,
-      channel_type)
-
+    channels = Channels.users_join(state.channels, channel, String.split(names, " ", trim: true), state.user_prefixes)
+      |> Channels.set_type(channel, channel_type)
     send_event({:names_list, channel, names}, state)
 
     {:noreply, %{state | channels: channels}}
@@ -638,10 +647,13 @@ defmodule ExIrc.Client do
     {:noreply, new_state}
   end
   # Called upon mode change
-  def handle_data(%IrcMessage{cmd: "MODE", args: [channel, op, user]}, state) do
-    if state.debug?, do: debug "MODE #{channel} #{op} #{user}"
-    send_event {:mode, [channel, op, user]}, state
-    {:noreply, state}
+  def handle_data(%IrcMessage{cmd: "MODE", args: [channel, op | op_args]}, state) do
+    if state.debug?, do: debug "MODE #{channel} #{op} #{op_args}"
+    modes     = Utils.parse_chanmode [channel, op, op_args], state
+    channels  = Channels.mode_update(state.channels, channel, modes)
+    new_state = %{state | channels: channels}
+    send_event {:mode, [channel, op, op_args]}, new_state
+    {:noreply, new_state}
   end
   # Called when we leave a channel
   def handle_data(%IrcMessage{cmd: "PART", nick: nick} = msg, %ClientState{nick: nick} = state) do

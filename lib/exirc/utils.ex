@@ -134,8 +134,82 @@ defmodule ExIrc.Utils do
                |> List.zip
     %{state | user_prefixes: prefixes}
   end
+  defp isup_param("CHANMODES=" <> channel_modes, state) do
+    modes = Regex.run(~r/^([a-z]*),([a-z]*),([a-z]*),([a-z]*)$/i, channel_modes, capture: :all_but_first)
+    %{state | channel_modes: modes}
+  end
   defp isup_param(_, state) do
     state
+  end
+
+  ############################
+  # Parse MODE command for channels
+  ############################
+
+  @doc """
+  Parse mode changes for a channel
+
+  """
+  @spec parse_chanmode(parameters :: list(binary), state :: ExIrc.Client.ClientState.t) :: list()
+  def parse_chanmode([_, op, args], state) do
+    chanmode_param(op, args, state, [], nil)
+  end
+
+  defp chanmode_param("", _, _, modes, _) do
+    modes
+  end
+
+  defp chanmode_param("+" <> op_rest, args, state, modes, _) do
+    chanmode_param(op_rest, args, state, modes, true)
+  end
+
+  defp chanmode_param("-" <> op_rest, args, state, modes, _) do
+    chanmode_param(op_rest, args, state, modes, false)
+  end
+
+  defp chanmode_param(<<next, op_rest::binary>>, args, %{
+      channel_modes: [a_mode, b_mode, c_mode, d_mode],
+      user_prefixes: user_prefixes
+    } = state, modes, add)
+  do
+    op = to_string([next])
+    {cur_arg, args_rest} = case args do
+      [cur | rest] -> {cur, rest}
+      [] -> {nil, []}
+    end
+    {new_modes, new_args} = cond do
+      String.contains?(a_mode, op) ->
+        {modes ++ [%{add: add, mode: op, arg: cur_arg, type: "A"}], args_rest}
+      String.contains?(b_mode, op) ->
+        {modes ++ [%{add: add, mode: op, arg: cur_arg, type: "B"}], args_rest}
+      String.contains?(c_mode, op) and add ->
+        {modes ++ [%{add: add, mode: op, arg: cur_arg, type: "C"}], args_rest}
+      String.contains?(c_mode, op) ->
+        # C type doesn't have arguments when removed
+        {modes ++ [%{add: add, mode: op, type: "C"}], args}
+      String.contains?(d_mode, op) ->
+        # D type doesn't have arguments
+        {modes ++ [%{add: add, mode: op, type: "D"}], args}
+      Enum.any?(user_prefixes, fn({p_mode, _}) -> p_mode == next end) ->
+        {modes ++ [%{add: add, mode: op, arg: cur_arg, type: "U"}], args_rest}
+      true ->
+        {modes ++ [%{add: add, mode: op}], args}
+    end
+    chanmode_param(op_rest, new_args, state, new_modes, add)
+  end
+
+  defp chanmode_param(op, args, state, modes, add) do
+    # Set some safe defaults for user_prefixes and channel_modes
+    chanmode_param(
+      op,
+      args,
+      %{
+        state |
+        user_prefixes: [{?o, ?@}, {?v, ?+}],
+        channel_modes: ["b", "k", "l", "psmnti"]
+      },
+      modes,
+      add)
   end
 
   ###################

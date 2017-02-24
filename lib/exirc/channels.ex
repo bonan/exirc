@@ -6,6 +6,13 @@ defmodule ExIrc.Channels do
 
   import String, only: [downcase: 1]
 
+  defmodule User do
+    defstruct nick: '',
+              user: '',
+              host: '',
+              mode: ''
+  end
+
   defmodule Channel do
     defstruct name:  '',
               topic: '',
@@ -109,18 +116,22 @@ defmodule ExIrc.Channels do
     users_manip(channel_tree, channel_name, manipfn)
   end
 
+  def users_join(channel_tree, channel_name, nicks, user_prefixes) do
+    pnicks = parse_users(nicks, user_prefixes)
+    manipfn = fn(channel_nicks) -> :lists.usort(channel_nicks ++ pnicks) end
+    users_manip(channel_tree, channel_name, manipfn)
+  end
+
   @doc """
   Remove a user from a tracked channel when they leave
   """
   def user_part(channel_tree, channel_name, nick) do
-    pnick = strip_rank([nick])
-    manipfn = fn(channel_nicks) -> :lists.usort(channel_nicks -- pnick) end
+    manipfn = fn(channel_nicks) -> Enum.filter(channel_nicks, fn(%{nick: cur_nick}) -> cur_nick !== nick end) end
     users_manip(channel_tree, channel_name, manipfn)
   end
 
   def user_quit(channel_tree, nick) do
-    pnick = strip_rank([nick])
-    manipfn = fn(channel_nicks) -> :lists.usort(channel_nicks -- pnick) end
+    manipfn = fn(channel_nicks) -> Enum.filter(channel_nicks, fn(%{nick: cur_nick}) -> cur_nick !== nick end) end
     foldl = fn(channel_name, new_channel_tree) ->
       name = downcase(channel_name)
       users_manip(new_channel_tree, name, manipfn)
@@ -133,16 +144,45 @@ defmodule ExIrc.Channels do
   """
   def user_rename(channel_tree, nick, new_nick) do
     manipfn = fn(channel_nicks) ->
-      case Enum.member?(channel_nicks, nick) do
-        true  -> [new_nick | channel_nicks -- [nick]] |> Enum.uniq |> Enum.sort
-        false -> channel_nicks
-       end
+      Enum.map(channel_nicks,
+        fn(%{nick: cur_nick} = user) ->
+          cond do
+            cur_nick === nick -> %{user | nick: new_nick}
+            true -> user
+          end
+        end
+      )
+      |> Enum.uniq
+      |> Enum.sort
     end
     foldl = fn(channel_name, new_channel_tree) ->
       name = downcase(channel_name)
       users_manip(new_channel_tree, name, manipfn)
     end
     :lists.foldl(foldl, channel_tree, channels(channel_tree))
+  end
+
+  def mode_update(channel_tree, channel, %{type: "U", arg: upd_nick, mode: mode, add: add}) do
+    mode_del_fn = fn(cur, new) ->
+      Enum.filter(cur, fn(c) -> c !== new end)
+    end
+    mode_add_fn = fn(cur, new) ->
+      cur <> new
+    end
+
+    users_manip(channel_tree, channel, fn(channel_nicks) ->
+      Map.enum(channel_nicks, fn(user) ->
+        case [user, add] do
+          [%{nick: upd_nick, mode: cur_mode}, true] -> %{user | mode: mode_add_fn(mode_del_fn(cur_mode,mode),mode)}
+          [%{nick: upd_nick, mode: cur_mode}, false] -> %{user | mode: mode_del_fn(cur_mode,mode)}
+          _ -> user
+        end
+      end)
+    end)
+  end
+
+  def mode_update(channel_tree, channel, mode) do
+    channel_tree
   end
 
   ################
@@ -160,6 +200,13 @@ defmodule ExIrc.Channels do
   Get a list of all users in a tracked channel
   """
   def channel_users(channel_tree, channel_name) do
+    get_attr(channel_tree, channel_name, fn(%Channel{users: users}) -> Enum.map(users, fn(%{nick: nick}) -> nick end) end) |> Enum.reverse
+  end
+
+  @doc """
+  Get a list of all users in a tracked channel
+  """
+  def channel_user_modes(channel_tree, channel_name) do
     get_attr(channel_tree, channel_name, fn(%Channel{users: users}) -> users end) |> Enum.reverse
   end
 
@@ -187,7 +234,9 @@ defmodule ExIrc.Channels do
   Determine if a user is present in a tracked channel
   """
   def channel_has_user?(channel_tree, channel_name, nick) do
-    get_attr(channel_tree, channel_name, fn(%Channel{users: users}) -> :lists.member(nick, users) end)
+    get_attr(channel_tree, channel_name, fn(%Channel{users: users}) ->
+      Enum.any?(users, fn(%{nick: cur_nick}) -> cur_nick === nick end)
+    end)
   end
 
   @doc """
@@ -199,7 +248,7 @@ defmodule ExIrc.Channels do
   """
   def to_proplist(channel_tree) do
     for {channel_name, chan} <- :gb_trees.to_list(channel_tree) do
-      {channel_name, [users: chan.users, topic: chan.topic, type: chan.type]}
+      {channel_name, [users: Enum.map(chan.users, fn(%{nick: nick}) -> nick end), topic: chan.topic, type: chan.type]}
     end |> Enum.reverse
   end
 
@@ -217,15 +266,24 @@ defmodule ExIrc.Channels do
     end
   end
 
+  defp parse_users(nicks, user_prefixes) do
+    nicks |> Enum.map(fn(<<p, nick::binary>> = n) ->
+      case Enum.find(user_prefixes, nil, fn({_,prefix}) -> prefix === p end) do
+        {mode, _} -> %User{nick: nick, mode: to_string([mode])}
+        nil -> %User{nick: n}
+      end
+    end)
+  end
+
   defp strip_rank(nicks) do
-    nicks |> Enum.map(fn(n) -> case n do
+    nicks |> Enum.map(fn(n) -> %User{nick: case n do
         << "@", nick :: binary >> -> nick
         << "+", nick :: binary >> -> nick
         << "%", nick :: binary >> -> nick
         << "&", nick :: binary >> -> nick
         << "~", nick :: binary >> -> nick
         nick -> nick
-      end
+      end}
     end)
   end
 

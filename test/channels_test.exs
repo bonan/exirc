@@ -67,13 +67,20 @@ defmodule ExIrc.ChannelsTest do
   end
 
   test "Can join multiple users to a channel" do
-    channels = Channels.init() |> Channels.join("#testchannel") |> Channels.users_join("#testchannel", ["testnick", "anothernick"])
+    channels = Channels.init()
+      |> Channels.join("#testchannel")
+      |> Channels.users_join("#testchannel", ["testnick", "anothernick"], [{?o,?@}, {?v,?+}])
     assert Channels.channel_has_user?(channels, "#testchannel", "testnick")
     assert Channels.channel_has_user?(channels, "#testchannel", "anothernick")
   end
 
   test "Strips rank designations from nicks" do
-    channels = Channels.init() |> Channels.join("#testchannel") |> Channels.users_join("#testchannel", ["+testnick", "@anothernick", "&athirdnick", "%somanynicks", "~onemorenick"])
+    channels = Channels.init()
+      |> Channels.join("#testchannel")
+      |> Channels.users_join("#testchannel",
+        ["+testnick", "@anothernick", "&athirdnick", "%somanynicks", "~onemorenick"],
+        [{?q,?~}, {?a,?&}, {?o,?@}, {?h,?%}, {?v,?+}]
+      )
     assert Channels.channel_has_user?(channels, "#testchannel", "testnick")
     assert Channels.channel_has_user?(channels, "#testchannel", "anothernick")
     assert Channels.channel_has_user?(channels, "#testchannel", "athirdnick")
@@ -84,7 +91,8 @@ defmodule ExIrc.ChannelsTest do
   test "Joining a users to a channel we aren't in is a noop" do
     channels = Channels.init() |> Channels.user_join("#testchannel", "testnick")
     assert {:error, :no_such_channel} == Channels.channel_has_user?(channels, "#testchannel", "testnick")
-    channels = Channels.init() |> Channels.users_join("#testchannel", ["testnick", "anothernick"])
+    channels = Channels.init()
+      |> Channels.users_join("#testchannel", ["testnick", "anothernick"], [{?o,?@}, {?v,?+}])
     assert {:error, :no_such_channel} == Channels.channel_has_user?(channels, "#testchannel", "testnick")
   end
 
@@ -101,8 +109,7 @@ defmodule ExIrc.ChannelsTest do
   end
 
   test "Can quit a user from all channels" do
-    channels =
-      Channels.init()
+    channels = Channels.init()
       |> Channels.join("#testchannel")
       |> Channels.user_join("#testchannel", "testnick")
       |> Channels.join("#anotherchannel")
@@ -121,6 +128,7 @@ defmodule ExIrc.ChannelsTest do
                 |> Channels.join("#anotherchan") 
                 |> Channels.user_join("#testchannel", "testnick")
                 |> Channels.user_join("#anotherchan", "testnick")
+                |> Channels.user_join("#testchannel", "secondnick")
     assert Channels.channel_has_user?(channels, "#testchannel", "testnick")
     assert Channels.channel_has_user?(channels, "#anotherchan", "testnick")
     channels = Channels.user_rename(channels, "testnick", "newnick")
@@ -128,6 +136,7 @@ defmodule ExIrc.ChannelsTest do
     refute Channels.channel_has_user?(channels, "#anotherchan", "testnick")
     assert Channels.channel_has_user?(channels, "#testchannel", "newnick")
     assert Channels.channel_has_user?(channels, "#anotherchan", "newnick")
+    assert Channels.channel_has_user?(channels, "#testchannel", "secondnick")
   end
 
   test "Renaming a user that doesn't exist is a noop" do
@@ -151,4 +160,30 @@ defmodule ExIrc.ChannelsTest do
     anotherchan = {"#anotherchan", [users: ["testnick"], topic: "Welcome to Another Channel!", type: :public]}
     assert [testchannel, anotherchan] == channels
   end
+
+  test "Can set user mode" do
+    state = %{
+      user_prefixes: [{?a, ?&}, {?o, ?@}, {?h, ?%}, {?v, ?+}],
+      channel_modes: ["beI", "kLf", "l", "psmntirzMQNRTOVKDdGPZSCc"]
+    }
+    channels = Channels.init()
+      |> Channels.join("#testchannel")
+      |> Channels.users_join("#testchannel", ["@testnick", "+secondnick", "me"], state.user_prefixes)
+
+    assert [
+      %{nick: "testnick", mode: "o"},
+      %{nick: "secondnick", mode: "v"},
+      %{nick: "me", mode: ""}
+      ] == Channels.channel_user_modes(channels, "#testchannel")
+
+    channels = Channels.mode_update(channels, "#testchannel", %{mode: "v", arg: "secondnick", type: "U", add: false})
+      |> Channels.mode_update("#testchannel", %{mode: "o", arg: "me", type: "U", add: true})
+
+    assert [
+      %{nick: "testnick", mode: "o"},
+      %{nick: "secondnick", mode: ""},
+      %{nick: "me", mode: "o"}
+      ] == Channels.channel_user_modes(channels, "#testchannel")
+  end
+
 end

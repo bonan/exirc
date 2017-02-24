@@ -54,6 +54,37 @@ defmodule ExIrc.UtilsTest do
     } = Utils.isup(parsed.args, state)
   end
 
+  test "Can parse channel MODE" do
+    state = %ClientState{
+      user_prefixes: [{?a, ?&}, {?o, ?@}, {?h, ?%}, {?v, ?+}],
+      channel_modes: ["beI", "kLf", "l", "psmntirzMQNRTOVKDdGPZSCc"]
+    }
+    parsed = Utils.parse_chanmode(["#test", "+o", ["testnick"]], state)
+    assert [%{add: true,mode: "o",arg: "testnick",type: "U"}] = parsed
+    parsed2 = Utils.parse_chanmode(["#test", "+bilk-plsoL", ["*!*@*", "100", "key", "testnick", "#overflow"]], state)
+    assert [
+      %{add: true, mode: "b", arg: "*!*@*", type: "A"},
+      %{add: true, mode: "i", type: "D"},
+      %{add: true, mode: "l", arg: "100", type: "C"},
+      %{add: true, mode: "k", arg: "key", type: "B"},
+      %{add: false, mode: "p", type: "D"},
+      %{add: false, mode: "l", type: "C"},
+      %{add: false, mode: "s", type: "D"},
+      %{add: false, mode: "o", arg: "testnick", type: "U"},
+      %{add: false, mode: "L", arg: "#overflow", type: "B"}
+    ] = parsed2
+  end
+
+  test "Can parse channel mode with missing RPL_ISUPPORT" do
+    state = %ClientState{}
+    parsed = Utils.parse_chanmode(["#test", "+ki-o", ["test", "testnick"]], state)
+    assert [
+      %{add: true, mode: "k", arg: "test", type: "B"},
+      %{add: true, mode: "i", type: "D"},
+      %{add: false, mode: "o", arg: "testnick", type: "U"}
+    ] = parsed
+  end
+
   test "Can parse full prefix in messages" do
     assert %IrcMessage{
       nick: "WiZ",
